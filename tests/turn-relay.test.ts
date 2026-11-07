@@ -91,6 +91,49 @@ test("relays one upstream Messages request and captures its SSE response", async
   }
 });
 
+test("adds the per-message effort beta when the forwarded body carries a system message with output_config", async () => {
+  // Claude Code sends a `role: "system"` message with `output_config.effort` under its own
+  // per-turn beta. When the relay replays that message on a request whose header lacks a beta
+  // that admits it, Anthropic rejects it: `messages.1.output_config: Extra inputs are not permitted`.
+  // https://platform.claude.com/docs/en/build-with-claude/effort#per-message-effort-beta
+  const betas: string[] = [];
+  const upstream = http.createServer(async (request, response) => {
+    for await (const _ of request);
+    betas.push(String(request.headers["anthropic-beta"] ?? ""));
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.end(`data: ${JSON.stringify({ type: "message_stop" })}\n\n`);
+  });
+  const port = await listen(upstream);
+  const relay = new TurnRelay(`http://127.0.0.1:${port}`, 5_000);
+  const effortSystem = { role: "system", content: [], output_config: { effort: "medium" } };
+  try {
+    const baseUrl = await relay.start();
+    for (const [messages, header] of [
+      [[{ role: "user", content: "hi" }, effortSystem], "claude-code-20250219"],
+      [[{ role: "user", content: "hi" }], "claude-code-20250219"],
+      [[{ role: "user", content: "hi" }, effortSystem], "claude-code-20250219,mid-conversation-output-config-2026-07-01"],
+    ] as const) {
+      relay.beginTurn();
+      const response = await fetch(`${baseUrl}/v1/messages`, {
+        method: "POST",
+        headers: { "anthropic-beta": header },
+        body: JSON.stringify({ messages }),
+      });
+      await response.text();
+      await relay.settled();
+      relay.finishTurn();
+    }
+    assert.deepEqual(betas, [
+      "claude-code-20250219,mid-conversation-output-config-2026-07-01",
+      "claude-code-20250219",
+      "claude-code-20250219,mid-conversation-output-config-2026-07-01",
+    ]);
+  } finally {
+    await relay.close();
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
+  }
+});
+
 test("surfaces an error event from an otherwise successful SSE stream", async () => {
   const upstream = http.createServer(async (request, response) => {
     for await (const _chunk of request);
