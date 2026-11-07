@@ -121,6 +121,8 @@ const STRIPPED_RESPONSE_HEADERS = new Set(["connection", "transfer-encoding", "s
 export const PER_MESSAGE_OUTPUT_CONFIG_BETA = "mid-conversation-output-config-2026-07-01";
 
 function hasPerMessageOutputConfig(body: Buffer): boolean {
+  // Most requests carry no such message; skip the full parse unless the key appears at all.
+  if (!body.includes("\"output_config\"")) return false;
   try {
     const { messages } = JSON.parse(body.toString("utf8")) as { messages?: unknown };
     return (
