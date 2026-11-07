@@ -158,11 +158,15 @@ class EventTranslator {
   private readonly nativeToContent = new Map<number, number>();
   private sawContentEvent = false;
 
-  constructor(
-    private readonly model: Model<any>,
-    private readonly output: AssistantMessage,
-    private readonly stream: AssistantMessageEventStream,
-  ) {}
+  private readonly model: Model<any>;
+  private readonly output: AssistantMessage;
+  private readonly stream: AssistantMessageEventStream;
+
+  constructor(model: Model<any>, output: AssistantMessage, stream: AssistantMessageEventStream) {
+    this.model = model;
+    this.output = output;
+    this.stream = stream;
+  }
 
   event(event: AnthropicStreamEvent): void {
     switch (event.type) {
