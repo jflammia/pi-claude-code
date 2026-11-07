@@ -32,7 +32,18 @@ test("fallback catalog matches Claude Code's selectable model families", () => {
 });
 
 test("never routes an explicit model id through a family alias that Claude Code may repoint", () => {
-  for (const id of ["claude-sonnet-5", "claude-haiku-4-5-20251001", "claude-sonnet-5-5"]) assert.equal(nativeModel(id), id, id);
+  for (const id of ["claude-sonnet-5", "claude-haiku-4-5-20251001"]) assert.equal(nativeModel(id), id, id);
+  // A discovered row is routed by what its alias resolved to, never by the alias.
+  modelFromDiscovery({
+    value: "sonnet",
+    resolvedModel: "claude-sonnet-5-5",
+    displayName: "Sonnet",
+    description: "Sonnet 5.5",
+    supportsAdaptiveThinking: true,
+  });
+  assert.equal(nativeModel("claude-sonnet-5-5"), "claude-sonnet-5-5");
+  modelFromDiscovery({ value: "opus[1m]", resolvedModel: "claude-opus-5-5", displayName: "Opus", description: "Opus 5.5" });
+  assert.equal(nativeModel("claude-opus-5-5"), "claude-opus-5-5[1m]");
   // A catalog row that Claude Code serves with 1M context keeps it.
   assert.equal(nativeModel("claude-fable-5-1"), "claude-fable-5-1[1m]");
   assert.equal(nativeModel("claude-sonnet-5[1m]"), "claude-sonnet-5[1m]");
