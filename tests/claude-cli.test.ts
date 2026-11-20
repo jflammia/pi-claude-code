@@ -47,6 +47,32 @@ function rewrite(
 
 const withoutMarkers = (value: unknown): unknown => JSON.parse(JSON.stringify(value, (key, child) => (key === "cache_control" ? undefined : child)));
 
+test("restores canonical initial user content from string and array wire forms", () => {
+  const canonical = [{ role: "user", content: [text("canonical inspect")] }];
+  for (const content of ["native inspect", [text("native inspect")]]) {
+    assert.deepEqual(rewrite([{ role: "user", content }], framesFor(canonical)), canonical);
+  }
+});
+
+test("rejects missing, non-user, and invalid initial user content", () => {
+  const frames = framesFor([{ role: "user", content: [text("inspect")] }]);
+  const bodies = [
+    {},
+    { messages: [] },
+    { messages: [{ role: "assistant", content: "inspect" }] },
+    { messages: [{ role: "system", content: [text("inspect")] }] },
+    ...[undefined, null, 42, true, { type: "text", text: "inspect" }].map((content) => ({
+      messages: [{ role: "user", content }],
+    })),
+  ];
+  for (const body of bodies) {
+    assert.throws(
+      () => rewriteInitialRequest(Buffer.from(JSON.stringify(body)), frames, undefined),
+      /Claude Code request is missing its initial user message/,
+    );
+  }
+});
+
 test("stabilizes Claude Code's native replay reminders and cache breakpoint", () => {
   const initialSystemMessages = [
     {
@@ -175,6 +201,25 @@ test("strips reminder blocks from text-array tool results and keeps Claude Code'
   assert.deepEqual(rewritten[0]?.content, [text("look"), resized, note]);
   assert.deepEqual(rewritten[2]?.content, [
     { type: "tool_result", tool_use_id: "t1", content: [text("result"), image] },
+  ]);
+
+  // Text-only initial users can be sent as strings even when later tool results contain images.
+  const stringInitialFrames = structuredClone(frames);
+  stringInitialFrames[0]!.message.content = [text("look")];
+  const stringInitial = rewrite(
+    [
+      { role: "user", content: "look" },
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "read", input: {} }] },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "t1", content: [text("result"), resized, note, text(account)] }],
+      },
+    ],
+    stringInitialFrames,
+  );
+  assert.deepEqual(stringInitial[0]?.content, [text("look")]);
+  assert.deepEqual(stringInitial[2]?.content, [
+    { type: "tool_result", tool_use_id: "t1", content: [text("result"), resized, note] },
   ]);
 });
 
