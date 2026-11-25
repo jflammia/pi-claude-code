@@ -58,9 +58,54 @@ function nativeToolUseId(id: string): string {
   return id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
 }
 
+function repairToolResults(messages: Message[]): Message[] {
+  const repaired: Message[] = [];
+  const missing = new Map<string, ToolResultMessage>();
+  const skipped = new Set<string>();
+  const heldSystems: SystemMessage[] = [];
+
+  function closeToolTurn(): void {
+    for (const result of missing.values()) repaired.push(result);
+    for (const system of heldSystems) repaired.push(system);
+    missing.clear();
+    skipped.clear();
+    heldSystems.length = 0;
+  }
+
+  for (const message of messages) {
+    if (message.role === "assistant" || message.role === "user") closeToolTurn();
+    if (message.role === "assistant") {
+      const incomplete = message.stopReason === "error" || message.stopReason === "aborted";
+      for (const block of message.content) {
+        if (block.type !== "toolCall") continue;
+        if (incomplete) skipped.add(block.id);
+        else missing.set(block.id, {
+          role: "toolResult",
+          toolCallId: block.id,
+          toolName: block.name,
+          content: [{ type: "text", text: "No result provided" }],
+          isError: true,
+          timestamp: message.timestamp,
+        });
+      }
+      if (incomplete) continue;
+    } else if (message.role === "toolResult") {
+      if (skipped.has(message.toolCallId)) continue;
+      missing.delete(message.toolCallId);
+    } else if (message.role === "system" && (missing.size > 0 || heldSystems.length > 0)) {
+      // A system update does not interrupt the run of results for this turn.
+      heldSystems.push(message);
+      continue;
+    }
+    repaired.push(message);
+  }
+  closeToolTurn();
+  return repaired;
+}
+
 export function prepareMessages(messages: Message[], model: Model<any>): Message[] {
   const toolCallIds = new Map<string, string>();
-  return messages.map((message) => {
+  const normalized = messages.map((message) => {
     if (message.role === "toolResult") {
       const id = toolCallIds.get(message.toolCallId);
       return id && id !== message.toolCallId ? { ...message, toolCallId: id } : message;
@@ -86,6 +131,7 @@ export function prepareMessages(messages: Message[], model: Model<any>): Message
       }),
     };
   });
+  return repairToolResults(normalized);
 }
 
 function clone<T>(value: T): T {
