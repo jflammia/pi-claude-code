@@ -847,6 +847,26 @@ function normalizeLeadingSystemCache(system: unknown): void {
   }
 }
 
+function capCacheBreakpoints(tools: unknown, system: unknown, messages: NativeRequestMessage[]): void {
+  const marked: ContentBlock[] = [];
+  function collect(blocks: unknown): void {
+    if (!Array.isArray(blocks)) return;
+    for (const block of blocks) {
+      if (!isBlock(block)) continue;
+      // The outer marker covers the entire result, after any inner markers.
+      // Do not walk tool inputs or schemas: their keys are not API markers.
+      if (block.type === "tool_result") collect(block.content);
+      if (Object.hasOwn(block, "cache_control")) marked.push(block);
+    }
+  }
+
+  // Claude caches request prefixes in tools → system → messages order.
+  collect(tools);
+  collect(system);
+  for (const message of messages) collect(message.content);
+  for (const block of marked.slice(0, Math.max(0, marked.length - 4))) delete block.cache_control;
+}
+
 export function rewriteInitialRequest(
   body: Buffer,
   frames: NativeFrame[],
@@ -856,15 +876,16 @@ export function rewriteInitialRequest(
   const payload = JSON.parse(body.toString("utf8")) as {
     messages?: NativeRequestMessage[];
     system?: unknown;
+    tools?: unknown;
   };
   let messages = payload.messages;
   const first = messages?.[0];
-  if (first?.role !== "user" || !(Array.isArray(first.content) || typeof first.content === "string")) {
+  if (!messages || first?.role !== "user" || !(Array.isArray(first.content) || typeof first.content === "string")) {
     throw new Error("Claude Code request is missing its initial user message");
   }
-  if (messages) restoreCanonicalUserContent(messages, frames);
+  restoreCanonicalUserContent(messages, frames);
 
-  if (initialSystemMessages?.length && messages) {
+  if (initialSystemMessages?.length) {
     let systemEnd = 1;
     while (messages[systemEnd]?.role === "system") systemEnd += 1;
     messages.splice(1, systemEnd - 1, ...(structuredClone(initialSystemMessages) as NativeRequestMessage[]));
@@ -880,11 +901,12 @@ export function rewriteInitialRequest(
   }
 
   if (nativeSystemInjections) {
-    messages = injectNativeSystemMessages(messages!, nativeSystemInjections);
+    messages = injectNativeSystemMessages(messages, nativeSystemInjections);
     payload.messages = messages;
     normalizeLeadingSystemCache(payload.system);
   }
-  if (initialSystemMessages?.length || nativeSystemInjections) setReplayCacheBreakpoints(messages!);
+  if (initialSystemMessages?.length || nativeSystemInjections) setReplayCacheBreakpoints(messages);
+  capCacheBreakpoints(payload.tools, payload.system, messages);
 
   return Buffer.from(JSON.stringify(payload));
 }
