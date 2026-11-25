@@ -69,6 +69,74 @@ test("prepares replay frames and groups tool results", () => {
   assert.equal(frames[2]?.shouldQuery, undefined);
 });
 
+test("repairs missing parallel tool results before the next user prompt", () => {
+  const model = { id: "sonnet", api: "test", provider: "claude-code" } as Model<any>;
+  const assistant: AssistantMessage = {
+    role: "assistant",
+    api: model.api,
+    provider: model.provider,
+    model: model.id,
+    content: [
+      { type: "toolCall", id: "t1", name: "read", arguments: {} },
+      { type: "toolCall", id: "t2", name: "read", arguments: {} },
+    ],
+    usage,
+    stopReason: "toolUse",
+    timestamp: 1,
+  };
+  const initial: Message[] = [
+    { role: "user", content: "inspect", timestamp: 0 },
+    assistant,
+    { role: "system", content: "environment update", timestamp: 2 },
+    {
+      role: "toolResult", toolCallId: "t1", toolName: "read",
+      content: [{ type: "text", text: "A" }], isError: false, timestamp: 3,
+    },
+  ];
+  const resume: Message = { role: "user", content: "resume", timestamp: 4 };
+  const results = [
+    { type: "tool_result", tool_use_id: "t1", content: "A", is_error: false },
+    { type: "tool_result", tool_use_id: "t2", content: "No result provided", is_error: true },
+  ];
+  const messages = [...initial, resume];
+  const original = structuredClone(messages);
+  const prepared = prepareMessages(messages, model);
+  assert.deepEqual(prepareFrames(prepared).at(-1)?.message.content, [...results, { type: "text", text: "resume" }]);
+  assert.deepEqual(prepared.map((message) => message.role), ["user", "assistant", "toolResult", "toolResult", "system", "user"]);
+  assert.deepEqual(prepareMessages(messages, model), prepared);
+  assert.deepEqual(messages, original);
+  assert.deepEqual(prepareFrames(prepareMessages(initial, model)).at(-1)?.message.content, results);
+
+  const complete: Message[] = [...initial.slice(0, 2), initial[3]!, {
+    role: "toolResult", toolCallId: "t2", toolName: "read",
+    content: [{ type: "text", text: "B" }], isError: false, timestamp: 3,
+  }, resume];
+  assert.deepEqual(prepareMessages(complete, model), complete);
+});
+
+for (const stopReason of ["error", "aborted"] as const) {
+  test(`does not replay an ${stopReason} assistant turn or its tool results`, () => {
+    const model = { id: "sonnet", api: "test", provider: "claude-code" } as Model<any>;
+    const messages: Message[] = [
+      { role: "user", content: "inspect", timestamp: 0 },
+      {
+        role: "assistant", api: model.api, provider: model.provider, model: model.id,
+        content: [{ type: "toolCall", id: "t1", name: "read", arguments: {} }],
+        usage, stopReason, timestamp: 1,
+      },
+      {
+        role: "toolResult", toolCallId: "t1", toolName: "read",
+        content: [{ type: "text", text: "A" }], isError: false, timestamp: 2,
+      },
+      { role: "user", content: "resume", timestamp: 3 },
+    ];
+    const frames = prepareFrames(prepareMessages(messages, model));
+    assert.deepEqual(frames.map((frame) => frame.message.content), [[
+      { type: "text", text: "inspect" }, { type: "text", text: "resume" },
+    ]]);
+  });
+}
+
 test("replays native signed blocks only while the visible projection is unchanged", () => {
   const assistant: AssistantMessage = {
     role: "assistant",
