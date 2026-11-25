@@ -326,6 +326,42 @@ test("injects native system history at assistant boundaries", () => {
   );
 });
 
+function countCacheMarkers(value: unknown): number {
+  if (Array.isArray(value)) return value.reduce((sum: number, child) => sum + countCacheMarkers(child), 0);
+  if (!value || typeof value !== "object") return 0;
+  return Object.entries(value).reduce((sum, [key, child]) => sum + (key === "cache_control" ? 1 : countCacheMarkers(child)), 0);
+}
+
+for (const nested of [false, true]) {
+  test(`caps cache breakpoints with two user messages${nested ? " and nested tool-result content" : ""}`, () => {
+    const marker = { type: "ephemeral", ttl: "1h" };
+    const initialUser = { ...text("run it"), cache_control: marker };
+    const tool = { name: "mcp__pi__bash", input_schema: { type: "object" } };
+    const result = {
+      type: "tool_result", tool_use_id: "t1",
+      content: nested ? [{ ...text("hi"), cache_control: marker }] : "hi",
+      cache_control: marker,
+    };
+    const body = {
+      system: [{ ...text("identity"), cache_control: marker }, { ...text("prompt"), cache_control: marker }],
+      tools: [{ ...tool, cache_control: marker }],
+      messages: [
+        { role: "user", content: [initialUser] },
+        { role: "assistant", content: [{ type: "tool_use", id: "t1", name: tool.name, input: {} }] },
+        { role: "user", content: [result] },
+      ],
+    };
+    const initialSystem = [{ role: "system", content: "environment" }];
+    const frames = framesFor(body.messages);
+    const rewritten = JSON.parse(rewriteInitialRequest(Buffer.from(JSON.stringify(body)), frames, initialSystem).toString("utf8"));
+    assert.equal(countCacheMarkers(rewritten), 4);
+    assert.deepEqual(rewritten.tools, [tool]);
+    assert.deepEqual(rewritten.system, [nested ? text("identity") : body.system[0], body.system[1]]);
+    assert.deepEqual(rewritten.messages[0].content, [initialUser]);
+    assert.deepEqual(rewritten.messages.at(-1).content, [result]);
+  });
+}
+
 test("keeps one breakpoint in a pre-marked multi-block final message (issue #10)", () => {
   // Shape Claude Code sends for Fable after a tool result: a trailing system
   // message whose first block is already marked.
@@ -359,16 +395,7 @@ test("keeps one breakpoint in a pre-marked multi-block final message (issue #10)
       [],
     ).toString("utf8"),
   );
-  const count = (value: unknown): number =>
-    Array.isArray(value)
-      ? value.reduce((sum: number, child) => sum + count(child), 0)
-      : value && typeof value === "object"
-        ? Object.entries(value).reduce(
-            (sum: number, [key, child]) => sum + (key === "cache_control" ? 1 : count(child)),
-            0,
-          )
-        : 0;
-  assert.ok(count(rewritten) <= 4, `found ${count(rewritten)} cache_control markers`);
+  assert.ok(countCacheMarkers(rewritten) <= 4, `found ${countCacheMarkers(rewritten)} cache_control markers`);
   const final = rewritten.messages.at(-1).content as Array<Record<string, unknown>>;
   assert.equal(final[0]?.cache_control, undefined);
   assert.deepEqual(final.at(-1)?.cache_control, marker);
